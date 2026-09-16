@@ -28,12 +28,14 @@ const publicLicensingRoutes = require("./routes/publicLicensingRoutes");
 const estimatorRoutes = require("./routes/estimatorRoutes");
 const publicEstimatorRoutes = require("./routes/publicEstimatorRoutes");
 const { apiLimiter } = require("./middleware/rateLimiter");
+const { startScheduler } = require("./jobs/scheduler");
 
 const app = express();
 
 connectDB();
+startScheduler();
  
-app.set("trust proxy", true);  
+app.set("trust proxy", 1);  
  
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(
@@ -43,6 +45,7 @@ app.use(
         process.env.CLIENT_URL,
         "http://localhost:5173",
         "http://localhost:3000",
+        "https://www.dynamicssquare.ca"
       ].filter(Boolean);
       // Allow requests with no origin (e.g. mobile apps, curl, Postman)
       if (!origin || allowed.includes(origin)) return callback(null, true);

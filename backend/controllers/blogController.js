@@ -36,6 +36,7 @@ const readingTime = (content) => {
 const populateOpts = [
   { path: "category", select: "name slug color" },
   { path: "author", select: "name avatarUrl avatarColor designation authorSlug socialLinks about schemaMarkup" },
+  { path: "reviewedBy", select: "name avatarUrl avatarColor designation authorSlug socialLinks about schemaMarkup" },
 ];
 
 // GET /api/blogs?search=&category=&status=&page=
@@ -69,6 +70,7 @@ exports.listBlogs = async (req, res) => {
         all: await Blog.countDocuments({}),
         draft: await Blog.countDocuments({ status: "draft" }),
         published: await Blog.countDocuments({ status: "published" }),
+        scheduled: await Blog.countDocuments({ status: "scheduled" }),
       },
     });
   } catch (err) {
@@ -90,7 +92,11 @@ exports.getBlog = async (req, res) => {
 // POST /api/blogs
 exports.createBlog = async (req, res) => {
   try {
-    const { title, content = "", excerpt, category, tags = [], seo = {}, status, featuredImage, slug: requestedSlug, schemaMarkup = [], faqs = [] } = req.body;
+    const { title, content = "", excerpt, category, tags = [], seo = {}, status, featuredImage, slug: requestedSlug, schemaMarkup = [], faqs = [], publishedAt, author, reviewedBy } = req.body;
+
+    if (!title || !content) {
+      return res.status(400).json({ message: "Title and content are required" });
+    }
 
     if (category) {
       const cat = await Category.findById(category);
@@ -104,9 +110,33 @@ exports.createBlog = async (req, res) => {
     const slug = await generateUniqueSlug(Blog, requestedSlug || title);
 
     const wantsPublish = status === "published";
+    const wantsSchedule = status === "scheduled";
      
     const canPublish = req.user.role.isSuperAdmin || req.user.role.permissions.includes("blog:publish");
-    const finalStatus = wantsPublish && canPublish ? "published" : "draft";
+    const canReassignAuthor = req.user.role.isSuperAdmin || req.user.role.permissions.includes("blog:edit");
+    
+    let finalStatus = "draft";
+    if (wantsPublish && canPublish) finalStatus = "published";
+    else if (wantsSchedule && canPublish) {
+      if (!publishedAt || new Date(publishedAt) <= new Date()) {
+        return res.status(400).json({ message: "Scheduled date must be in the future" });
+      }
+      finalStatus = "scheduled";
+    }
+
+    let finalAuthor = req.user.id;
+    if (author && canReassignAuthor && author !== req.user.id.toString()) {
+      const newAuthor = await User.findById(author);
+      if (!newAuthor) return res.status(400).json({ message: "Selected author does not exist" });
+      finalAuthor = newAuthor._id;
+    }
+
+    let finalReviewedBy = null;
+    if (reviewedBy) {
+      const reviewer = await User.findById(reviewedBy);
+      if (!reviewer) return res.status(400).json({ message: "Selected reviewer does not exist" });
+      finalReviewedBy = reviewer._id;
+    }
 
     const seoScore = calculateSeoScore({
       title,
@@ -134,8 +164,10 @@ exports.createBlog = async (req, res) => {
           }))
         : [],
       status: finalStatus,
-      author: req.user.id,
-      publishedAt: finalStatus === "published" ? new Date() : undefined,
+      author: finalAuthor,
+      reviewedBy: finalReviewedBy || undefined,
+      scheduledAt: finalStatus === "scheduled" ? new Date(publishedAt) : undefined,
+      publishedAt: finalStatus === "published" ? (publishedAt ? new Date(publishedAt) : new Date()) : undefined,
       readingTimeMinutes: readingTime(cleanContent),
     });
 
@@ -152,7 +184,7 @@ exports.updateBlog = async (req, res) => {
     const blog = await Blog.findById(req.params.id);
     if (!blog) return res.status(404).json({ message: "Post not found" });
 
-    const { title, content, excerpt, category, tags, seo, featuredImage, slug: requestedSlug, schemaMarkup, author, faqs } = req.body;
+    const { title, content, excerpt, category, tags, seo, featuredImage, slug: requestedSlug, schemaMarkup, author, reviewedBy, faqs, publishedAt } = req.body;
 
     if (category !== undefined) {
       if (category) {
@@ -166,6 +198,16 @@ exports.updateBlog = async (req, res) => {
       const newAuthor = await User.findById(author);
       if (!newAuthor) return res.status(400).json({ message: "Selected author does not exist" });
       blog.author = newAuthor._id;
+    }
+
+    if (reviewedBy !== undefined) {
+      if (reviewedBy) {
+        const reviewer = await User.findById(reviewedBy);
+        if (!reviewer) return res.status(400).json({ message: "Selected reviewer does not exist" });
+        blog.reviewedBy = reviewer._id;
+      } else {
+        blog.reviewedBy = undefined;
+      }
     }
 
     if (schemaMarkup !== undefined) {
@@ -199,6 +241,10 @@ exports.updateBlog = async (req, res) => {
         : [];
     }
 
+    if (publishedAt !== undefined) {
+      blog.publishedAt = publishedAt ? new Date(publishedAt) : null;
+    }
+
     blog.seoScore = calculateSeoScore({
       title: blog.title,
       content: blog.content,
@@ -217,15 +263,24 @@ exports.updateBlog = async (req, res) => {
  
 exports.setBlogStatus = async (req, res) => {
   try {
-    const { status } = req.body;
-    if (!["draft", "published"].includes(status)) {
+    const { status, scheduledAt } = req.body;
+    if (!["draft", "published", "scheduled"].includes(status)) {
       return res.status(400).json({ message: "Invalid status" });
     }
     const blog = await Blog.findById(req.params.id);
     if (!blog) return res.status(404).json({ message: "Post not found" });
 
-    blog.status = status;
-    if (status === "published" && !blog.publishedAt) blog.publishedAt = new Date();
+    if (status === "scheduled") {
+      if (!scheduledAt || new Date(scheduledAt) <= new Date()) {
+        return res.status(400).json({ message: "Scheduled date must be in the future" });
+      }
+      blog.scheduledAt = new Date(scheduledAt);
+      blog.status = "scheduled";
+    } else {
+      blog.status = status;
+      if (status === "published" && !blog.publishedAt) blog.publishedAt = new Date();
+      if (status === "draft") blog.scheduledAt = undefined;
+    }
     await blog.save();
 
     const populated = await blog.populate(populateOpts);

@@ -1,4 +1,5 @@
 import { useEditor, EditorContent } from "@tiptap/react";
+import { Node, Extension, mergeAttributes } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import Underline from "@tiptap/extension-underline";
 import Link from "@tiptap/extension-link";
@@ -18,6 +19,34 @@ import {
   Maximize, Minimize,
 } from "lucide-react";
 import { uploadMedia } from "../../api/galleryApi";
+
+/* ── Generic HTML Handlers for TipTap ── */
+// TipTap normally strips unknown tags like <div> or <span>. These generic extensions
+// teach it to accept them so your custom CTA blocks don't disappear in visual mode.
+const GenericBlock = Node.create({
+  name: "genericBlock",
+  group: "block",
+  content: "block+", // allows paragraphs, headings, etc. inside
+  parseHTML() {
+    return [{ tag: "div" }, { tag: "section" }, { tag: "article" }, { tag: "aside" }, { tag: "figure" }, { tag: "figcaption" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["div", mergeAttributes(HTMLAttributes), 0];
+  },
+});
+
+const GenericInline = Node.create({
+  name: "genericInline",
+  group: "inline",
+  inline: true,
+  content: "inline*",
+  parseHTML() {
+    return [{ tag: "span" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ["span", mergeAttributes(HTMLAttributes), 0];
+  },
+});
 
 /* ── Paste sanitizer: strips all inline styles, classes, and Word junk ── */
 function sanitizePastedHTML(html) {
@@ -160,8 +189,224 @@ function HeadingDropdown({ editor, disabled }) {
   );
 }
 
+function TableDropdown({ editor, disabled, inTable }) {
+  const [open, setOpen] = useState(false);
+  const [rows, setRows] = useState(3);
+  const [cols, setCols] = useState(3);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    if (open) document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const insertTable = () => {
+    let r = Math.max(1, Math.min(100, rows));
+    let c = Math.max(1, Math.min(100, cols));
+    editor.chain().focus().insertTable({ rows: r, cols: c, withHeaderRow: true }).run();
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative flex" ref={ref}>
+      <ToolbarButton
+        title="Insert table"
+        active={inTable || open}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+      >
+        <TableIcon size={15} />
+      </ToolbarButton>
+
+      {open && (
+        <div className="absolute left-0 top-full mt-1.5 z-50 flex flex-col gap-3 rounded-lg border border-paper-line bg-paper-card p-3 shadow-xl w-48">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-muted">Insert Table</div>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-muted font-medium">Rows</label>
+              <input 
+                type="number" min="1" max="100" 
+                value={rows} onChange={e => setRows(Number(e.target.value))} 
+                className="w-16 rounded border border-paper-line bg-paper px-2 py-1 text-xs text-ink focus:border-signal outline-none" 
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-muted font-medium">Columns</label>
+              <input 
+                type="number" min="1" max="100" 
+                value={cols} onChange={e => setCols(Number(e.target.value))} 
+                className="w-16 rounded border border-paper-line bg-paper px-2 py-1 text-xs text-ink focus:border-signal outline-none" 
+              />
+            </div>
+          </div>
+          <button onClick={insertTable} className="w-full rounded-md bg-signal py-1.5 text-xs font-semibold text-white hover:opacity-90 transition-opacity">
+            Create
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LinkDropdown({ editor, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [isNofollow, setIsNofollow] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (open) {
+      const attrs = editor.getAttributes("link");
+      setUrl(attrs.href || "");
+      setIsNofollow(attrs.rel === "nofollow");
+    }
+  }, [open, editor]);
+
+  useEffect(() => {
+    const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    if (open) document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  useEffect(() => {
+    if (!editor?.view?.dom) return;
+    const dom = editor.view.dom;
+    const handler = (e) => {
+      if (e.detail?.action === "open-link" && !disabled) {
+        setOpen(true);
+      }
+    };
+    dom.addEventListener("tiptap-link-shortcut", handler);
+    return () => dom.removeEventListener("tiptap-link-shortcut", handler);
+  }, [editor, disabled]);
+
+  const applyLink = () => {
+    if (!url.trim()) {
+      editor.chain().focus().extendMarkRange("link").unsetLink().run();
+    } else {
+      let finalUrl = url.trim();
+      if (!/^https?:\/\//.test(finalUrl) && !/^mailto:/.test(finalUrl) && !finalUrl.startsWith("/") && !finalUrl.startsWith("#")) {
+        finalUrl = "https://" + finalUrl;
+      }
+      editor.chain().focus().extendMarkRange("link").setLink({ 
+        href: finalUrl, 
+        rel: isNofollow ? "nofollow" : null,
+        target: "_blank" 
+      }).run();
+    }
+    setOpen(false);
+  };
+
+  const removeLink = () => {
+    editor.chain().focus().extendMarkRange("link").unsetLink().run();
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative flex" ref={ref}>
+      <ToolbarButton
+        title="Link (Ctrl+K)"
+        active={editor.isActive("link") || open}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+      >
+        <LinkIcon size={15} />
+      </ToolbarButton>
+
+      {open && (
+        <div className="absolute left-0 top-full mt-1.5 z-50 flex flex-col gap-3 rounded-lg border border-paper-line bg-paper-card p-3 shadow-xl w-64">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-muted">Insert Link</div>
+          <input 
+            type="text" 
+            placeholder="https://..."
+            value={url} 
+            onChange={e => setUrl(e.target.value)} 
+            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); applyLink(); } }}
+            autoFocus
+            className="w-full rounded border border-paper-line bg-paper px-2 py-1.5 text-xs text-ink focus:border-signal outline-none" 
+          />
+          <div className="flex flex-col gap-1.5">
+            <label className="flex items-center gap-2 text-xs text-ink cursor-pointer hover:text-signal transition-colors">
+              <input type="checkbox" checked={isNofollow} onChange={e => setIsNofollow(e.target.checked)} className="rounded border-paper-line text-signal focus:ring-signal" />
+              Nofollow (SEO)
+            </label>
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button onClick={applyLink} className="flex-1 rounded-md bg-signal py-1.5 text-xs font-semibold text-white hover:opacity-90 transition-opacity">
+              Apply
+            </button>
+            {editor.isActive("link") && (
+              <button onClick={removeLink} className="rounded-md border border-paper-line px-2.5 py-1.5 text-xs font-semibold text-danger hover:bg-danger/5 transition-colors">
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const emptySeo = { metaTitle: "", metaDescription: "", focusKeyword: "" };
+
+// Helper to precisely format TipTap HTML for the database/frontend output
+const cleanTipTapHTML = (html) => {
+  if (!html) return "";
+  
+  // Create a detached DOM document to manipulate the HTML safely
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  
+  doc.querySelectorAll("table").forEach((table) => {
+    // 1. Remove inline styles and colgroups
+    table.removeAttribute("style");
+    table.querySelectorAll("colgroup").forEach(c => c.remove());
+    
+    // 2. Add Bootstrap table classes
+    table.className = "table table-bordered table-striped align-middle";
+    
+    const tbody = table.querySelector("tbody");
+    if (tbody) {
+      const firstRow = tbody.querySelector("tr");
+      if (firstRow) {
+        const cells = firstRow.querySelectorAll("td, th");
+        const isHeaderRow = cells.length > 0 && Array.from(cells).every(cell => cell.tagName.toLowerCase() === 'th');
+        
+        // 3. Move TH header row into a proper <thead class="table-dark">
+        if (isHeaderRow) {
+          let thead = table.querySelector("thead");
+          if (!thead) {
+            thead = doc.createElement("thead");
+            thead.className = "table-dark";
+            table.insertBefore(thead, tbody);
+          } else {
+            thead.className = "table-dark";
+          }
+          thead.appendChild(firstRow);
+        }
+      }
+      
+      // 4. Strip paragraphs and col/rowspans inside ALL cells (TDs and THs)
+      table.querySelectorAll("th, td").forEach(cell => {
+        if (cell.getAttribute("colspan") === "1") cell.removeAttribute("colspan");
+        if (cell.getAttribute("rowspan") === "1") cell.removeAttribute("rowspan");
+        if (cell.tagName.toLowerCase() === 'th') cell.setAttribute("scope", "col");
+        
+        // If the only child is a paragraph, unwrap it
+        const p = cell.querySelector("p");
+        if (p && cell.children.length === 1) {
+          cell.innerHTML = p.innerHTML;
+        }
+      });
+    }
+  });
+  
+  return doc.body.innerHTML;
+};
+
 export default function TipTapEditor({ value, onChange, placeholder = "Write your post...", variant = "default", fullHeight = false }) {
   const fileInputRef = useRef(null);
+  const rawHtmlRef = useRef(null); // stores last raw code-view HTML as source of truth
   const [uploading, setUploading] = useState(false);
   const [codeView, setCodeView] = useState(false);
   const [codeDraft, setCodeDraft] = useState("");
@@ -174,8 +419,8 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
       StarterKit.configure({
         heading: isMinimal ? false : { levels: [1, 2, 3, 4, 5, 6] },
         blockquote: isMinimal ? false : {},
-        bulletList: isMinimal ? false : {},
-        orderedList: isMinimal ? false : {},
+        bulletList: {}, // Always allow bullet lists
+        orderedList: {}, // Always allow ordered lists
         codeBlock: isMinimal ? false : {},
       }),
       Underline,
@@ -184,6 +429,9 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
         autolink: true,
         protocols: ["http", "https", "mailto"],
         validate: (href) => /^https?:\/\//.test(href) || /^mailto:/.test(href),
+        HTMLAttributes: {
+          rel: null,
+        },
       }),
       ...(isMinimal
         ? []
@@ -195,9 +443,67 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
             TableCell,
           ]),
       Placeholder.configure({ placeholder }),
+      GenericBlock,
+      GenericInline,
+
+      // ── Preserve inline style="" on ALL elements ──────────────────────
+      // By default TipTap strips any attribute it doesn't know about.
+      // This global extension tells TipTap to keep style="" everywhere.
+      {
+        name: "globalStyle",
+        addGlobalAttributes() {
+          return [
+            {
+              types: [
+                "paragraph", "heading", "bulletList", "orderedList", "listItem",
+                "blockquote", "codeBlock", "image", "table", "tableRow",
+                "tableCell", "tableHeader", "genericBlock", "genericInline", "link", "textStyle"
+              ],
+              attributes: {
+                style: {
+                  default: null,
+                  parseHTML: (el) => el.getAttribute("style") || null,
+                  renderHTML: (attrs) => attrs.style ? { style: attrs.style } : {},
+                },
+                class: {
+                  default: null,
+                  parseHTML: (el) => el.getAttribute("class") || null,
+                  renderHTML: (attrs) => attrs.class ? { class: attrs.class } : {},
+                },
+                rel: {
+                  default: null,
+                  parseHTML: (el) => el.getAttribute("rel") || null,
+                  renderHTML: (attrs) => attrs.rel ? { rel: attrs.rel } : {},
+                },
+                target: {
+                  default: null,
+                  parseHTML: (el) => el.getAttribute("target") || null,
+                  renderHTML: (attrs) => attrs.target ? { target: attrs.target } : {},
+                },
+              },
+            },
+          ];
+        },
+      },
+      Extension.create({
+        name: 'customShortcuts',
+        addKeyboardShortcuts() {
+          return {
+            'Mod-k': () => {
+              if (this.editor.view.dom) {
+                this.editor.view.dom.dispatchEvent(new CustomEvent('tiptap-link-shortcut', { detail: { action: 'open-link' } }));
+              }
+              return true;
+            },
+          };
+        },
+      }),
     ],
     content: value || "",
-    onUpdate: ({ editor: ed }) => onChange?.(ed.getHTML()),
+    onUpdate: ({ editor: ed }) => {
+      rawHtmlRef.current = null; // user edited in visual mode → code view should reflect that
+      onChange?.(cleanTipTapHTML(ed.getHTML()));
+    },
     editorProps: {
       attributes: {
         class: `tiptap-content px-4 py-3 focus:outline-none ${isMinimal ? "min-h-[80px]" : fullHeight || isFullscreen ? "min-h-[400px]" : "min-h-[260px]"}`,
@@ -211,9 +517,14 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
 
   useEffect(() => {
     if (!editor || codeView) return;
-    const current = editor.getHTML();
+    const current = cleanTipTapHTML(editor.getHTML());
     if (value !== undefined && value !== current) {
       editor.commands.setContent(value || "", false);
+      if (rawHtmlRef.current === null) {
+        // Initialize the raw HTML reference with the actual database value
+        // so if the user opens code view before editing, they see the real HTML
+        rawHtmlRef.current = value;
+      }
     }
   }, [value, editor, codeView]);
 
@@ -226,17 +537,6 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
   }, [isFullscreen]);
 
   if (!editor) return null;
-
-  const setLink = () => {
-    const previous = editor.getAttributes("link").href;
-    const url = window.prompt("Link URL", previous || "https://");
-    if (url === null) return;
-    if (url === "") {
-      editor.chain().focus().extendMarkRange("link").unsetLink().run();
-      return;
-    }
-    editor.chain().focus().extendMarkRange("link").setLink({ href: url }).run();
-  };
 
   const insertImageByUrl = () => {
     const url = window.prompt("Image URL", "https://");
@@ -263,7 +563,6 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
     }
   };
 
-  const insertTable = () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
   const inTable = editor.isActive("table");
 
   // Pretty-print HTML:
@@ -298,19 +597,30 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
 
   const toggleCodeView = () => {
     if (!codeView) {
-      setCodeDraft(formatHTML(editor.getHTML()));
+      // Entering code view:
+      // If the user previously saved raw HTML from code view, show THAT — not
+      // TipTap's mangled reconstruction of it (which strips divs/styles etc.)
+      const source = rawHtmlRef.current !== null ? rawHtmlRef.current : cleanTipTapHTML(editor.getHTML());
+      setCodeDraft(formatHTML(source));
+      rawHtmlRef.current = null; // will be re-set when they exit code view
       setCodeView(true);
     } else {
-      editor.commands.setContent(codeDraft || "", true);
-      onChange?.(editor.getHTML());
+      // Exiting code view:
+      // 1. Store the raw code as the authoritative HTML for the next code-view open
+      rawHtmlRef.current = codeDraft;
+      // 2. Tell the parent form about the raw HTML (what will actually be saved)
+      onChange?.(codeDraft);
+      // 3. Load a simplified version into TipTap just for visual editing display
+      //    (TipTap will strip divs etc. — that's unavoidable — but the saved value is correct)
+      editor.commands.setContent(codeDraft || "", false);
       setCodeView(false);
     }
   };
 
   const editorBody = (
-    <div className={`overflow-hidden rounded-xl border border-paper-line bg-paper-card shadow-card ${fullHeight || isFullscreen ? "flex flex-col h-full" : ""}`}>
+    <div className={`rounded-xl border border-paper-line bg-paper-card shadow-card relative ${fullHeight || isFullscreen ? "flex flex-col h-full" : ""}`}>
       {/* ─── Toolbar ─── */}
-      <div className="flex flex-wrap items-center gap-0.5 border-b border-paper-line bg-paper px-2 py-1 sticky top-0 z-10">
+      <div className="flex flex-wrap items-center gap-0.5 border-b border-paper-line bg-paper px-2 py-1 sticky top-0 z-40 rounded-t-xl">
         {/* Heading / Paragraph dropdown */}
         {!isMinimal && (
           <>
@@ -341,22 +651,19 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
         <ToolbarDivider />
 
         {/* Lists, quote */}
-        {!isMinimal && (
-          <>
-            <ToolbarButton title="Bullet list" active={editor.isActive("bulletList")} disabled={codeView} onClick={() => editor.chain().focus().toggleBulletList().run()}>
-              <List size={15} />
-            </ToolbarButton>
-            <ToolbarButton title="Numbered list" active={editor.isActive("orderedList")} disabled={codeView} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
-              <ListOrdered size={15} />
-            </ToolbarButton>
-            <ToolbarButton title="Quote" active={editor.isActive("blockquote")} disabled={codeView} onClick={() => editor.chain().focus().toggleBlockquote().run()}>
-              <Quote size={15} />
-            </ToolbarButton>
-          </>
-        )}
-        <ToolbarButton title="Link" active={editor.isActive("link")} disabled={codeView} onClick={setLink}>
-          <LinkIcon size={15} />
+        <ToolbarButton title="Bullet list" active={editor.isActive("bulletList")} disabled={codeView} onClick={() => editor.chain().focus().toggleBulletList().run()}>
+          <List size={15} />
         </ToolbarButton>
+        <ToolbarButton title="Numbered list" active={editor.isActive("orderedList")} disabled={codeView} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
+          <ListOrdered size={15} />
+        </ToolbarButton>
+
+        {!isMinimal && (
+          <ToolbarButton title="Quote" active={editor.isActive("blockquote")} disabled={codeView} onClick={() => editor.chain().focus().toggleBlockquote().run()}>
+            <Quote size={15} />
+          </ToolbarButton>
+        )}
+        <LinkDropdown editor={editor} disabled={codeView} />
 
         {/* Media & table */}
         {!isMinimal && (
@@ -370,17 +677,27 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
             </ToolbarButton>
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
 
-            <ToolbarButton title="Insert table" active={inTable} disabled={codeView} onClick={insertTable}>
-              <TableIcon size={15} />
-            </ToolbarButton>
+            <TableDropdown editor={editor} disabled={codeView} inTable={inTable} />
             {inTable && !codeView && (
               <>
                 <ToolbarButton title="Add row below" onClick={() => editor.chain().focus().addRowAfter().run()}>
                   <Rows3 size={15} />
                 </ToolbarButton>
+                <ToolbarButton title="Delete row" onClick={() => editor.chain().focus().deleteRow().run()}>
+                  <span className="text-xs font-bold line-through">R</span>
+                </ToolbarButton>
+                
+                <ToolbarDivider />
+                
                 <ToolbarButton title="Add column right" onClick={() => editor.chain().focus().addColumnAfter().run()}>
                   <Columns3 size={15} />
                 </ToolbarButton>
+                <ToolbarButton title="Delete column" onClick={() => editor.chain().focus().deleteColumn().run()}>
+                  <span className="text-xs font-bold line-through">C</span>
+                </ToolbarButton>
+                
+                <ToolbarDivider />
+
                 <ToolbarButton title="Delete table" onClick={() => editor.chain().focus().deleteTable().run()}>
                   <Trash2 size={15} />
                 </ToolbarButton>
@@ -419,7 +736,10 @@ export default function TipTapEditor({ value, onChange, placeholder = "Write you
       {codeView ? (
         <textarea
           value={codeDraft}
-          onChange={(e) => setCodeDraft(e.target.value)}
+          onChange={(e) => {
+            setCodeDraft(e.target.value);
+            onChange?.(e.target.value);
+          }}
           spellCheck={false}
           rows={16}
           placeholder="<p>Post HTML...</p>"
