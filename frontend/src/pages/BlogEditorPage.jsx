@@ -338,7 +338,7 @@ export default function BlogEditorPage() {
           {/* Preview Button: Only show if it's saved and status is draft or scheduled */}
           {!!postIdRef.current && (status === "draft" || status === "scheduled") && (
             <a
-              href={`${"https://www.dynamicssquare.com"}/blog/preview/${form.slug}`}
+              href={`${"https://www.dynamicssquare.ca"}/blog/preview/${form.slug}`}
               target="_blank"
               rel="noopener noreferrer"
               className="btn-secondary text-xs flex items-center gap-1"
